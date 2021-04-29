@@ -1,10 +1,11 @@
+require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const app = express();
 
-const PORT = 7001;
+const PORT = process.env.PORT || null;
+if(PORT === null) throw Error;
 
-// Have Node serve the files for our built React app
 app.use(express.static(path.join(__dirname, 'client')));
 
 app.get('/*', (req, res) => {
