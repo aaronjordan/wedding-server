@@ -3,3 +3,4 @@ client
 .DS_Store
 .env
 media
+rsvp.db

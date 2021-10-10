@@ -73,19 +73,20 @@ app.get(`${IMAGE_BASE_URL}/:imgLabel`, async (req, res) => {
 });
 
 app.get('/node/rsvp/self', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
+
   const instance = initDB(DB_CONSTANTS.RSVP_RW);
   if(!instance) return res.status(500).send('Error DB001: Connection not available');
 
   const socialEmail = req.cookies.login_email || '';
-  const name = req.cookies.login_name || '';
+  const name = req.cookies.login_name?.toLocaleLowerCase() || '';
 
   // try social_email match shortcut
   const socialConnect = await new Promise((resolve, reject) => {
-    instance.get(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL, {
+    instance.prepare(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL).get({
       $email: socialEmail
-    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (socialConnect === DB_CONSTANTS.FAILURE_CODE) return false;
   else if (socialConnect?.id) {
@@ -99,9 +100,9 @@ app.get('/node/rsvp/self', async (req, res) => {
   
   // find if login email is associated with a contact_group
   let contactGroup = await new Promise((resolve, reject) => {
-    instance.get(DB_CONSTANTS.GROUP_BY_EMAIL, {
-      $email: socialEmail
-    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    instance.prepare(DB_CONSTANTS.GROUP_BY_EMAIL).get({
+        $email: socialEmail
+      }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (contactGroup === DB_CONSTANTS.FAILURE_CODE) return false;
   //TODO: should we do something with the verified_email field?
@@ -109,18 +110,27 @@ app.get('/node/rsvp/self', async (req, res) => {
   // find if login_name is associated with a people row
   // use login_name to filter number of names returned. only return if either 
   // substring (typically first, last) from login_name is found
-  let similarPeople = await new Promise((resolve, reject) => {
+  let dbPeople = await new Promise((resolve, reject) => {
     const splitName = name.split(' ');
-    instance.all(DB_CONSTANTS.ALL_PEOPLE_WITH_NAME, {
+    instance.prepare(DB_CONSTANTS.ALL_PEOPLE_WITH_NAME).all({
         $name_begin: `%${splitName[0]}%`, $name_end: `%${splitName[splitName.length-1]}%`
       }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)
-    );
+    ).finalize();
+  })
+  
+  let similarPeople = dbPeople.map(person => {
+    person.first = String(person.first).toLocaleLowerCase();
+    person.middle = String(person.middle).toLocaleLowerCase();
+    person.last = String(person.last).toLocaleLowerCase();
+    return person;
   });
   if (similarPeople === DB_CONSTANTS.FAILURE_CODE) return false;
+  // work on the below... is object result...
+  // similarPeople = similarPeople.map(n => n.toLocaleLowerCase()); // lowercase for compare
 
   // immediately invoked function will return one match {} or null if no match is found
   const person = (() => {
-    if(contactGroup.id) {
+    if(contactGroup && contactGroup.id) {
       // name must match member of group. easier.
       const peopleWithGroupId = similarPeople
         .filter(user => user.contact_group && user.contact_group === contactGroup.id);
@@ -156,22 +166,22 @@ app.get('/node/rsvp/self', async (req, res) => {
   // record social_email to speed up any more /self calls by this user if a person was found
   let updateResult = person?.id && await new Promise((resolve, reject) => {
     console.log(`Recording new social email for user logged into ${person.id} with name ${name} as ${socialEmail}`);
-    instance.run(DB_CONSTANTS.UPDATE_SOCIAL_EMAIL, {
+    instance.prepare(DB_CONSTANTS.UPDATE_SOCIAL_EMAIL).run({
         $email: socialEmail, $id: person.id
       }, (err) => resolve(err ? closeOnFailedQuery(instance, res) : true)
-    );
+    ).finalize();
   });
   if (updateResult === DB_CONSTANTS.FAILURE_CODE) return false;
 
   res.json({
     status: 'ok',
-    self: person,
+    self: dbPeople.find(dbPerson => person?.id === dbPerson?.id),
   });
   instance.close();
 });
 
 app.post('/node/rsvp/self', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
   const instance = initDB(DB_CONSTANTS.RSVP_RW);
   if(!instance) return res.status(500).send('Error DB001: Connection not available');
@@ -181,10 +191,10 @@ app.post('/node/rsvp/self', async (req, res) => {
 
   // try social_email match shortcut
   const validation = await new Promise((resolve, reject) => {
-    instance.get(DB_CONSTANTS.VALIDATE_PERSON_BY_EMAIL, {
+    instance.prepare(DB_CONSTANTS.VALIDATE_PERSON_BY_EMAIL).get({
       $email: socialEmail,
       $id: id
-    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (validation === DB_CONSTANTS.FAILURE_CODE) return false;
   else if (!validation.result) {
@@ -194,12 +204,13 @@ app.post('/node/rsvp/self', async (req, res) => {
   }
 
   let updateResult = await new Promise((resolve, reject) => {
-    instance.run(DB_CONSTANTS.UPDATE_IN_PERSON, {
+    instance.prepare(DB_CONSTANTS.UPDATE_IN_PERSON).get({
         $inPerson: inPerson, $id: id
       }, (err) => resolve(err ? closeOnFailedQuery(instance, res) : true)
-    );
+    ).finalize();
   });
   if (updateResult === DB_CONSTANTS.FAILURE_CODE) return false;
+  else console.log(`self updated user with id ${id}`);
 
   res.json({
     status: 'ok',
@@ -209,7 +220,7 @@ app.post('/node/rsvp/self', async (req, res) => {
 });
 
 app.get('/node/rsvp/group', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
   const instance = initDB(DB_CONSTANTS.RSVP_R);
   if(!instance) return res.status(500).send('Error DB001: Connection not available');
@@ -219,9 +230,9 @@ app.get('/node/rsvp/group', async (req, res) => {
 
   // use social_email for match
   const self = await new Promise((resolve, reject) => {
-    instance.get(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL, {
+    instance.prepare(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL).get({
       $email: socialEmail
-    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (self === DB_CONSTANTS.FAILURE_CODE) return false;
   else if (!self?.id) {
@@ -235,10 +246,10 @@ app.get('/node/rsvp/group', async (req, res) => {
 
   // get group members of contact_group
   const groupMembers = await new Promise((resolve, reject) => {
-    instance.all(DB_CONSTANTS.GROUP_RSVPS_FROM_GROUP_ID, {
+    instance.prepare(DB_CONSTANTS.GROUP_RSVPS_FROM_GROUP_ID).all({
       $contactGroup: contact_group,
       $id: id,
-    }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows));
+    }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows)).finalize();
   });
   if (groupMembers === DB_CONSTANTS.FAILURE_CODE) return false;
 
@@ -250,7 +261,7 @@ app.get('/node/rsvp/group', async (req, res) => {
 });
 
 app.post('/node/rsvp/group', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
   const updates = req.body;
   if(!(updates instanceof Array) || updates.length === 0)
@@ -263,17 +274,17 @@ app.post('/node/rsvp/group', async (req, res) => {
 
   // look up user with social_email
   const self = await new Promise((resolve, reject) => {
-    instance.get(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL, {
+    instance.prepare(DB_CONSTANTS.PERSON_BY_SOCIAL_EMAIL).get({
       $email: socialEmail
-    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    }, (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (self === DB_CONSTANTS.FAILURE_CODE) return false;
 
   // get group members of contact_group
-  const groupMembers = await new Promise((resolve, reject) => {
-    instance.all(DB_CONSTANTS.GROUP_RSVPS_FROM_GROUP_ID, {
+  let groupMembers = await new Promise((resolve, reject) => {
+    instance.prepare(DB_CONSTANTS.GROUP_RSVPS_FROM_GROUP_ID).all({
       $contactGroup: self.contact_group, $id: 0,
-    }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows));
+    }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows)).finalize();
   });
   if (groupMembers === DB_CONSTANTS.FAILURE_CODE) return false;
 
@@ -285,9 +296,9 @@ app.post('/node/rsvp/group', async (req, res) => {
   if (onlyContactGroupUpdates) {
     const dispatchUpdate = (params) => {
       return new Promise((resolve, reject) => {
-        instance.all(DB_CONSTANTS.UPDATE_IN_PERSON_BULK, {
+        instance.prepare(DB_CONSTANTS.UPDATE_IN_PERSON_BULK).get({
           $inPerson: params.in_person, $id: params.id, $userId: self.id
-        }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows));
+        }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows)).finalize();
       });
     };
 
@@ -296,8 +307,7 @@ app.post('/node/rsvp/group', async (req, res) => {
 
     // check whole array for any failure codes
     if (updatePromises.some(x => x === DB_CONSTANTS.FAILURE_CODE)) return false;
-    console.log('did writes');
-    console.log(updatePromises)
+    console.log(`updated group ${self.contact_group} by user with id ${self.id}`);
   } else {
     res.status(403).send('Error: Unauthorized operation with global table scope.');
     instance.close();
@@ -310,8 +320,41 @@ app.post('/node/rsvp/group', async (req, res) => {
   instance.close();
 });
 
-app.get('/node/rsvp/admin/people', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+app.all('/node/rsvp/register', async (req, res) => {
+  if(!(await validateUserSession(req.cookies)))
+    return res.sendStatus(401);
+
+  const instance = initDB(DB_CONSTANTS.RSVP_RW);
+  if(!instance) return res.status(500).send('Error DB001: Connection not available');
+
+  const name = req.cookies.login_name || '';
+  const email = req.cookies.login_email || '';
+
+  const dbEmail = await new Promise((resolve, reject) => {
+    instance.prepare(DB_CONSTANTS.CHECK_IF_REGISTERED).get({
+      $email: email,
+    }, (err, rows) => resolve(err ? closeOnFailedQuery(instance, res) : rows)).finalize();
+  });
+  if (dbEmail === DB_CONSTANTS.FAILURE_CODE) return false;
+
+  if(typeof dbEmail == 'object' && dbEmail.email) {
+    res.json({result: 'found'});
+  } else if (String(req.query.create) === 'true') {
+    const dbWrite = await new Promise((resolve, reject) => {
+      instance.prepare(DB_CONSTANTS.REGISTER_NEW_PERSON).run({
+        $email: email, $name: name
+      }, (err) => resolve(err ? closeOnFailedQuery(instance, res) : true)).finalize();
+    });
+    if (dbWrite === DB_CONSTANTS.FAILURE_CODE) return false;
+
+    res.json({result: 'created'});
+  } else {
+    res.json({result: 'not found'})
+  }
+});
+
+app.get('/node/admin/people', async (req, res) => {
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
     
   const socialEmail = req.cookies.login_email || '';
@@ -323,8 +366,8 @@ app.get('/node/rsvp/admin/people', async (req, res) => {
 
   // view table of invitees
   const people = await new Promise((resolve, reject) => {
-    instance.all(DB_CONSTANTS.GET_PEOPLE,
-      (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row));
+    instance.prepare(DB_CONSTANTS.GET_PEOPLE).all(
+      (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
   });
   if (people === DB_CONSTANTS.FAILURE_CODE) return false;
 
@@ -335,13 +378,77 @@ app.get('/node/rsvp/admin/people', async (req, res) => {
   instance.close();
 });
 
+app.get('/node/admin/sessions', async (req, res) => {
+  if(!(await validateUserSession(req.cookies)))
+    return res.sendStatus(401);
+    
+  const socialEmail = req.cookies.login_email || '';
+  if (!String(process.env.ADMIN_EMAIL).includes(socialEmail))
+    return res.sendStatus(403);
+  
+  const instance = initDB(DB_CONSTANTS.RSVP_R);
+  if(!instance) return res.status(500).send('Error DB001: Connection not available');
+
+  // view table of invitees
+  const people = await new Promise((resolve, reject) => {
+    instance.prepare(DB_CONSTANTS.GET_SESSIONS).all(
+      (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
+  });
+  if (people === DB_CONSTANTS.FAILURE_CODE) return false;
+
+  res.json({
+    status: 'ok',
+    sessions: people.map(x => x.login_email)
+  });
+  instance.close();
+});
+
+app.get('/node/admin/new-people', async (req, res) => {
+  if(!(await validateUserSession(req.cookies)))
+    return res.sendStatus(401);
+    
+  const socialEmail = req.cookies.login_email || '';
+  if (!String(process.env.ADMIN_EMAIL).includes(socialEmail))
+    return res.sendStatus(403);
+  
+  const instance = initDB(DB_CONSTANTS.RSVP_R);
+  if(!instance) return res.status(500).send('Error DB001: Connection not available');
+
+  // view table of invitees
+  const people = await new Promise((resolve, reject) => {
+    instance.prepare(DB_CONSTANTS.GET_REGISTRATIONS).all(
+      (err, row) => resolve(err ? closeOnFailedQuery(instance, res) : row)).finalize();
+  });
+  if (people === DB_CONSTANTS.FAILURE_CODE) return false;
+
+  res.json({
+    status: 'ok',
+    newPeople: people
+  });
+  instance.close();
+});
+
+app.get('/node/user-type', async (req, res) => {
+  if(!(await validateUserSession(req.cookies)))
+    return res.sendStatus(401);
+    
+  const socialEmail = req.cookies.login_email || '';
+  const adminUserList = String(process.env.ADMIN_EMAIL).split(',');
+  const isAdmin = adminUserList.includes(socialEmail);
+
+  res.json({
+    status: 'ok',
+    admin: isAdmin
+  });
+});
+
 DEV && app.get('/node/logRequest', (req, res) => {
   console.log(req.cookies);
   res.json(req.cookies);
 });
 
 DEV && app.get('/node/testAuthCode', async (req, res) => {
-  if(!validateUserSession(req.cookies))
+  if(!(await validateUserSession(req.cookies)))
     return res.sendStatus(401);
 
   const match = await validateUserSession(req.cookies);
@@ -358,11 +465,11 @@ DEV && app.get('/node/testDBAccess', async (req, res) => {
   if(!instance) return res.sendStatus(500);
 
   const resultSet = new Promise((resolve, reject) => {
-    instance.all(DB_CONSTANTS.GET_PEOPLE, 
+    instance.prepare(DB_CONSTANTS.GET_PEOPLE).all( 
       (err, rows) => {
         if(err) return res.sendStatus(500);
         resolve(rows);
-      });
+      }).finalize();
   });
 
   res.json(await resultSet);

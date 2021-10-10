@@ -28,12 +28,16 @@ const helpers = Object.freeze({
     PERSON_BY_SOCIAL_EMAIL: 'SELECT * FROM people WHERE social_email=$email',
     VALIDATE_PERSON_BY_EMAIL: 'SELECT social_email=$email AND id=$id AS result FROM people WHERE social_email=$email',
     GROUP_RSVPS_FROM_GROUP_ID: 'SELECT id, full_name, rsvp_completed, rsvp_received, in_person, stream_only FROM people WHERE contact_group=$contactGroup AND NOT (id=$id)',
+    CHECK_IF_REGISTERED: 'SELECT email FROM new_people where email=$email',
     GET_PEOPLE: 'SELECT people.*, contact_groups.email, contact_groups.verified_email, contact_groups.address FROM people LEFT JOIN contact_groups ON people.contact_group=contact_groups.id',
+    GET_SESSIONS: 'SELECT login_email FROM session',
+    GET_REGISTRATIONS: 'SELECT * FROM new_people',
 
     // standard write statements
     UPDATE_SOCIAL_EMAIL: 'UPDATE people SET social_email=$email, id=$id WHERE id=$id',
     UPDATE_IN_PERSON: 'UPDATE people SET in_person=$inPerson, id=$id, rsvp_completed=1, rsvp_received=1 WHERE id=$id',
     UPDATE_IN_PERSON_BULK: 'UPDATE people SET in_person=$inPerson, id=$id, rsvp_completed=(id=$userId), rsvp_received=1 WHERE id=$id',
+    REGISTER_NEW_PERSON: 'INSERT INTO new_people (name, email) VALUES ($name, $email)',
 
     // config objects
     RSVP_RW: Object.freeze({
@@ -87,15 +91,12 @@ const helpers = Object.freeze({
   
     const codedString = `${name}TO${email}INTO${CANONICAL_HOST}`;
     const thisHash = md5(codedString);
-    console.log('hash to ' + thisHash)
-
     const matchesSelf = thisHash === cookies.login_id;
     if(!matchesSelf) return false;
 
     const instance = new RSVP_R.plugin.Database(RSVP_R.url, RSVP_R.protocol || undefined, err => {
       return null;
     }); if(!instance) return null;
-    console.log(instance)
 
     const dbMatch = await new Promise((resolve, reject) => {
       instance.get(GET_MATCH_MD5, {
@@ -103,7 +104,6 @@ const helpers = Object.freeze({
         $email: cookies.login_email
       }, (err, row) => resolve(err ? null : row));
     });
-    console.log(dbMatch);
 
     instance.close();
     return dbMatch && dbMatch.key === thisHash;
